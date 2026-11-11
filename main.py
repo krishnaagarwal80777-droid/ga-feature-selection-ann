@@ -16,7 +16,7 @@ def main():
     results = {}
 
     for name in ("breast_cancer", "german_credit"):
-        X, y, _ = load_dataset(name)
+        X, y, _, _, _ = load_dataset(name)
         scores = {metric: [] for metric in metric_names}
         mask = np.ones(X.shape[1], dtype=bool)
 
