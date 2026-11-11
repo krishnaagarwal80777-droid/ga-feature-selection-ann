@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import time
 import warnings
 
@@ -52,6 +53,9 @@ SENSITIVITY_RUNS_PATH = os.path.join(RESULT_DIR, "sensitivity_runs.csv")
 SENSITIVITY_SEEDS = range(5)
 SENSITIVITY_ALPHAS = (0, 0.005, 0.01, 0.02, 0.05, 0.1)
 NOISE_SENSITIVITY_ALPHAS = (0, 0.01, 0.05, 0.1, 0.2)
+COMPARISONS = ("all_features", "MI", "RFE", "PCA", "Random")
+# nadeau-bengio n_test / n_train
+TEST_TRAIN_RATIO = 0.2 / 0.8
 
 
 def _save_csv(frame, path):
@@ -228,67 +232,82 @@ def _write_feature_frequency(runs, noise=False):
         )
 
 
+def _holm(pvals):
+    pvals = np.asarray(pvals, dtype=float)
+    adj = np.empty(len(pvals))
+    running = 0.0
+    for rank, i in enumerate(np.argsort(pvals)):
+        running = max(running, min(1.0, (len(pvals) - rank) * pvals[i]))
+        adj[i] = running
+    return adj
+
+
+def _paired_row(dataset, comparison, ga, other):
+    diff = ga - other
+    n = len(diff)
+    mean = float(diff.mean())
+    sd = float(np.std(diff, ddof=1))
+    crit = t.ppf(0.975, n - 1)
+    nb_se = sd * np.sqrt(1.0 / n + TEST_TRAIN_RATIO)
+    if sd == 0 and mean == 0:
+        t_stat, t_p, nb_stat, nb_p = 0.0, 1.0, 0.0, 1.0
+    else:
+        t_stat, t_p = ttest_rel(ga, other)
+        nb_stat = mean / nb_se
+        nb_p = 2 * t.sf(abs(nb_stat), n - 1)
+
+    n_nonzero = int(np.count_nonzero(diff))
+    if n_nonzero == 0:
+        w_stat, w_p = 0.0, 1.0
+    else:
+        w_stat, w_p = wilcoxon(ga, other)
+
+    return {
+        "dataset": dataset,
+        "comparison": f"GA_vs_{comparison}",
+        "n_pairs": n,
+        "mean_balanced_accuracy_difference": mean,
+        "ci95_lower": mean - crit * sd / np.sqrt(n),
+        "ci95_upper": mean + crit * sd / np.sqrt(n),
+        "paired_t_statistic": float(t_stat),
+        "paired_t_pvalue": float(t_p),
+        "nb_t_statistic": float(nb_stat),
+        "nb_pvalue": float(nb_p),
+        "nb_ci95_lower": mean - crit * nb_se,
+        "nb_ci95_upper": mean + crit * nb_se,
+        "wilcoxon_statistic": float(w_stat),
+        "wilcoxon_pvalue": float(w_p),
+        "wilcoxon_n_nonzero_differences": n_nonzero,
+        "min_possible_wilcoxon_p": min(1.0, 2.0 ** (1 - n_nonzero)),
+    }
+
+
 def _write_paired_stats(runs, filename="stats.csv"):
-    rows = []
+    frames = []
     for dataset in DATASETS:
         data = runs[runs["dataset"] == dataset]
-        for comparison in ("all_features", "RFE"):
-            paired = data[data["method"].isin(("GA", comparison))]
-            wide = paired.pivot(index="seed", columns="method", values="balanced_accuracy")
-            if not {"GA", comparison}.issubset(wide.columns):
+        wide = data.pivot(index="seed", columns="method", values="balanced_accuracy")
+        rows = []
+        for comparison in COMPARISONS:
+            if "GA" not in wide.columns or comparison not in wide.columns:
                 continue
-            wide = wide.dropna(subset=["GA", comparison]).sort_index()
-            if len(wide) < 2:
+            pair = wide[["GA", comparison]].dropna().sort_index()
+            if len(pair) < 2:
                 continue
-            ga_scores = wide["GA"].to_numpy()
-            other_scores = wide[comparison].to_numpy()
-            diff = ga_scores - other_scores
-            t_result = ttest_rel(ga_scores, other_scores)
-            mean_diff = float(np.mean(diff))
-            margin = float(
-                t.ppf(0.975, len(diff) - 1)
-                * np.std(diff, ddof=1)
-                / np.sqrt(len(diff))
-            )
-            n_nonzero = int(np.count_nonzero(diff))
-            if n_nonzero == 0:
-                wilcoxon_stat, wilcoxon_p = 0.0, 1.0
-            else:
-                w_result = wilcoxon(ga_scores, other_scores)
-                wilcoxon_stat = float(w_result.statistic)
-                wilcoxon_p = float(w_result.pvalue)
             rows.append(
-                {
-                    "dataset": dataset,
-                    "comparison": f"GA_vs_{comparison}",
-                    "n_pairs": len(wide),
-                    "mean_balanced_accuracy_difference": mean_diff,
-                    "ci95_lower": mean_diff - margin,
-                    "ci95_upper": mean_diff + margin,
-                    "paired_t_statistic": float(t_result.statistic),
-                    "paired_t_pvalue": float(t_result.pvalue),
-                    "wilcoxon_statistic": wilcoxon_stat,
-                    "wilcoxon_pvalue": wilcoxon_p,
-                    "wilcoxon_n_nonzero_differences": n_nonzero,
-                }
+                _paired_row(
+                    dataset, comparison, pair["GA"].to_numpy(),
+                    pair[comparison].to_numpy(),
+                )
             )
-    columns = [
-        "dataset",
-        "comparison",
-        "n_pairs",
-        "mean_balanced_accuracy_difference",
-        "ci95_lower",
-        "ci95_upper",
-        "paired_t_statistic",
-        "paired_t_pvalue",
-        "wilcoxon_statistic",
-        "wilcoxon_pvalue",
-        "wilcoxon_n_nonzero_differences",
-    ]
-    _save_csv(
-        pd.DataFrame(rows, columns=columns),
-        os.path.join(RESULT_DIR, filename),
-    )
+        if not rows:
+            continue
+        frame = pd.DataFrame(rows)
+        for col in ("paired_t_pvalue", "nb_pvalue", "wilcoxon_pvalue"):
+            frame[f"{col}_holm"] = _holm(frame[col])
+        frames.append(frame)
+    stats = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    _save_csv(stats, os.path.join(RESULT_DIR, filename))
 
 
 def _print_summary(runs):
@@ -521,6 +540,94 @@ def run_noise():
         rows = _run_noise_seed(dataset, seed)
         runs = pd.concat([runs, pd.DataFrame(rows)], ignore_index=True)
         _save_noise_outputs(runs)
+
+
+def _fixed_baseline_rows(dataset, seed, noise, ga_row):
+    if noise:
+        X, y, groups, group_names = _load_noise_dataset(dataset)
+    else:
+        X, y, _, groups, group_names = load_dataset(dataset)
+    X_tr, X_te, y_tr, y_te = get_splits(X, y, seed)
+    ga_mask = np.isin(group_names, json.loads(ga_row["selected_attributes"]))
+    k = int(ga_mask.sum())
+    if k != int(ga_row["n_groups"]):
+        raise ValueError(f"ga mask mismatch: {dataset} seed={seed}")
+    runtime, gens = ga_row["ga_runtime"], ga_row["ga_generations"]
+
+    mi = mutual_info_mask(X_tr, y_tr, groups, k, seed=seed)
+    metrics = evaluate(
+        X_tr, y_tr, X_te, y_te, expand_group_mask(mi, groups), seed
+    )
+    rows = {
+        "MI": _method_row(
+            dataset, seed, "MI", mi, groups, metrics, runtime, gens,
+            group_names[mi].tolist(),
+        )
+    }
+    if noise:
+        n_noise = int(
+            np.sum(mi & np.char.startswith(group_names.astype(str), "noise_"))
+        )
+        rows["MI"]["noise_groups_kept"] = n_noise
+        rows["MI"]["real_groups_kept"] = k - n_noise
+        return rows
+
+    X_tr_pca, X_te_pca = pca_transform(X_tr, X_te, k, seed=seed)
+    ones = np.ones(k, dtype=bool)
+    metrics = evaluate(X_tr_pca, y_tr, X_te_pca, y_te, ones, seed)
+    rows["PCA"] = _method_row(
+        dataset, seed, "PCA", ones, np.arange(k), metrics, runtime, gens, [],
+        n_columns=k,
+    )
+    return rows
+
+
+def _rerun_file(path, noise):
+    backup = path.replace(".csv", "_before_baseline_fix.csv")
+    # never overwrite the original backup on a second run
+    if not os.path.exists(backup):
+        shutil.copyfile(path, backup)
+    # round_trip so untouched rows keep exact float digits
+    old = pd.read_csv(backup, float_precision="round_trip")
+    runs = pd.read_csv(path, float_precision="round_trip")
+    for _, ga_row in runs[runs["method"] == "GA"].iterrows():
+        dataset, seed = ga_row["dataset"], int(ga_row["seed"])
+        print(f"rerun {dataset} seed={seed} noise={noise}", flush=True)
+        for method, row in _fixed_baseline_rows(dataset, seed, noise, ga_row).items():
+            idx = runs.index[
+                (runs["dataset"] == dataset)
+                & (runs["seed"] == seed)
+                & (runs["method"] == method)
+            ]
+            if len(idx) != 1:
+                raise ValueError(f"expected one {method} row: {dataset} seed={seed}")
+            runs.loc[idx[0], list(row)] = list(row.values())
+        _save_csv(runs, path)
+    return old, runs
+
+
+def _print_baseline_change(old, new, methods):
+    for dataset in DATASETS:
+        for method in methods:
+            before = old[(old["dataset"] == dataset) & (old["method"] == method)]
+            after = new[(new["dataset"] == dataset) & (new["method"] == method)]
+            print(
+                f"{dataset} {method}: {before['balanced_accuracy'].mean():.4f}"
+                f" -> {after['balanced_accuracy'].mean():.4f}"
+            )
+
+
+def rerun_baselines():
+    old, runs = _rerun_file(RUNS_PATH, noise=False)
+    _write_summary(runs)
+    _write_paired_stats(runs)
+    noise_old, noise_runs = _rerun_file(NOISE_RUNS_PATH, noise=True)
+    _write_summary(noise_runs, filename="noise_summary.csv")
+    _write_paired_stats(noise_runs, filename="noise_stats.csv")
+    print("main runs")
+    _print_baseline_change(old, runs, ("MI", "PCA"))
+    print("noise runs")
+    _print_baseline_change(noise_old, noise_runs, ("MI",))
 
 
 def _sensitivity_specs(dataset, noise, n_groups):

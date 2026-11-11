@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.feature_selection import RFE, mutual_info_classif
@@ -34,7 +36,15 @@ def mutual_info_mask(X_tr, y_tr, groups, k, seed=0):
     if groups.ndim != 1 or len(groups) != X_tr.shape[1]:
         raise ValueError("groups must have one group id per feature column")
 
-    scores = mutual_info_classif(X_tr, y_tr, random_state=seed)
+    _, inv, counts = np.unique(groups, return_inverse=True, return_counts=True)
+    # multi-column groups are one-hot attributes
+    dummies = counts[inv] > 1
+    # scaled dummies are floats, sklearn warns but mi is unchanged
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Clustering metrics expects")
+        scores = mutual_info_classif(
+            X_tr, y_tr, discrete_features=dummies, random_state=seed
+        )
     return _top_groups(scores, groups, k)
 
 
@@ -64,6 +74,7 @@ def pca_transform(X_tr, X_te, k, seed=0):
         raise ValueError("k must be between 1 and the train data dimensions")
 
     pca = PCA(n_components=k, random_state=seed)
-    X_tr_pca = pca.fit_transform(X_tr)
-    X_te_pca = pca.transform(X_te)
+    scaler = StandardScaler()
+    X_tr_pca = scaler.fit_transform(pca.fit_transform(X_tr))
+    X_te_pca = scaler.transform(pca.transform(X_te))
     return X_tr_pca, X_te_pca
