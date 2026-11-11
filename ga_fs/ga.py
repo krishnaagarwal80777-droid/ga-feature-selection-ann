@@ -19,9 +19,11 @@ def crossover(parent_a, parent_b, rng, prob=0.8):
     return child_a, child_b
 
 
-def mutate(child, rng):
+def mutate(child, rng, rate=None):
     child = child.copy()
-    flips = rng.random(len(child)) < (1.0 / len(child))
+    if rate is None:
+        rate = 1.0 / len(child)
+    flips = rng.random(len(child)) < rate
     child[flips] = 1 - child[flips]
     if not child.any():
         child[rng.integers(0, len(child))] = 1
@@ -37,6 +39,7 @@ def run_ga(
     n_gen=40,
     alpha=0.01,
     metric="balanced_accuracy",
+    mutation_rate=None,
 ):
     if pop_size < 2:
         raise ValueError("pop_size must be at least 2")
@@ -44,6 +47,8 @@ def run_ga(
         raise ValueError("n_gen must be at least 1")
     if alpha < 0:
         raise ValueError("alpha must be non-negative")
+    if mutation_rate is not None and not 0 <= mutation_rate <= 1:
+        raise ValueError("mutation_rate must be between 0 and 1")
     if metric not in ("balanced_accuracy", "accuracy"):
         raise ValueError(f"unsupported metric: {metric}")
 
@@ -56,6 +61,8 @@ def run_ga(
     n_groups = len(group_ids)
     if n_groups == 0:
         raise ValueError("groups must not be empty")
+    if mutation_rate is None:
+        mutation_rate = 1.0 / n_groups
 
     pop = rng.integers(0, 2, size=(pop_size, n_groups), dtype=np.int8)
     for i in np.flatnonzero(~pop.any(axis=1)):
@@ -112,7 +119,11 @@ def run_ga(
                 parent_b = tournament(pop, fit, rng)
                 children = crossover(parent_a, parent_b, rng)
                 for child in children:
-                    new_pop.append(mutate(child, rng).astype(np.int8, copy=False))
+                    new_pop.append(
+                        mutate(child, rng, mutation_rate).astype(
+                            np.int8, copy=False
+                        )
+                    )
                     if len(new_pop) == pop_size:
                         break
             pop = np.asarray(new_pop)

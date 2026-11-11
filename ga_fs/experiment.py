@@ -12,8 +12,15 @@ import numpy as np
 import pandas as pd
 from scipy.stats import t, ttest_rel, wilcoxon
 from sklearn.exceptions import ConvergenceWarning
+from sklearn.model_selection import (
+    RepeatedStratifiedKFold,
+    cross_val_score,
+    train_test_split,
+)
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
-from ga_fs.ann import evaluate
+from ga_fs.ann import build_ann, cv_score, evaluate
 from ga_fs.baselines import (
     mutual_info_mask,
     pca_transform,
@@ -41,6 +48,10 @@ METRICS = (
 RESULT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "results")
 RUNS_PATH = os.path.join(RESULT_DIR, "all_runs.csv")
 NOISE_RUNS_PATH = os.path.join(RESULT_DIR, "noise_all_runs.csv")
+SENSITIVITY_RUNS_PATH = os.path.join(RESULT_DIR, "sensitivity_runs.csv")
+SENSITIVITY_SEEDS = range(5)
+SENSITIVITY_ALPHAS = (0, 0.005, 0.01, 0.02, 0.05, 0.1)
+NOISE_SENSITIVITY_ALPHAS = (0, 0.01, 0.05, 0.1, 0.2)
 
 
 def _save_csv(frame, path):
@@ -510,3 +521,399 @@ def run_noise():
         rows = _run_noise_seed(dataset, seed)
         runs = pd.concat([runs, pd.DataFrame(rows)], ignore_index=True)
         _save_noise_outputs(runs)
+
+
+def _sensitivity_specs(dataset, noise, n_groups):
+    base_mutation = 1.0 / n_groups
+    if noise:
+        return [
+            ("alpha", alpha, alpha, base_mutation, 30)
+            for alpha in NOISE_SENSITIVITY_ALPHAS
+        ]
+
+    specs = [
+        ("alpha", alpha, alpha, base_mutation, 30)
+        for alpha in SENSITIVITY_ALPHAS
+    ]
+    specs.extend(
+        ("mutation_rate", rate, 0.01, rate, 30)
+        for rate in (0.5 / n_groups, base_mutation, 2.0 / n_groups)
+    )
+    specs.extend(
+        ("pop_size", size, 0.01, base_mutation, size)
+        for size in (10, 20, 30, 50)
+    )
+    return specs
+
+
+def _sensitivity_config_key(row):
+    return (
+        row["dataset"],
+        bool(row["noise"]),
+        int(row["seed"]),
+        round(float(row["alpha"]), 12),
+        round(float(row["mutation_rate"]), 12),
+        int(row["pop_size"]),
+    )
+
+
+def _source_ga_row(dataset, noise, seed):
+    path = NOISE_RUNS_PATH if noise else RUNS_PATH
+    if not os.path.exists(path):
+        return None
+
+    source = pd.read_csv(path)
+    rows = source[
+        (source["dataset"] == dataset)
+        & (source["method"] == "GA")
+        & (pd.to_numeric(source["seed"]) == seed)
+    ]
+    if rows.empty:
+        return None
+    return rows.iloc[0]
+
+
+def _sensitivity_arrays(dataset, noise, seed):
+    if noise:
+        X, y, groups, group_names = _load_noise_dataset(dataset)
+    else:
+        X, y, _, groups, group_names = load_dataset(dataset)
+    X_tr, X_te, y_tr, y_te = get_splits(X, y, seed)
+    raw_X_tr, _, raw_y_tr, _ = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        random_state=seed,
+        stratify=y,
+    )
+    return X_tr, X_te, y_tr, y_te, groups, group_names, raw_X_tr, raw_y_tr
+
+
+def _sensitivity_scores(dataset, noise, seed, mask, arrays):
+    X_tr, X_te, y_tr, y_te, groups, _, raw_X_tr, raw_y_tr = arrays
+    column_mask = expand_group_mask(mask, groups)
+    fitness_cv = cv_score(
+        X_tr,
+        y_tr,
+        column_mask,
+        seed,
+        metric="balanced_accuracy",
+        fast=True,
+    )
+
+    model = make_pipeline(StandardScaler(), build_ann(seed))
+    cv = RepeatedStratifiedKFold(
+        n_splits=5, n_repeats=3, random_state=seed + 1000
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        independent_scores = cross_val_score(
+            model,
+            raw_X_tr[:, column_mask],
+            raw_y_tr,
+            cv=cv,
+            scoring="balanced_accuracy",
+            n_jobs=-1,
+        )
+
+    test_metrics = evaluate(X_tr, y_tr, X_te, y_te, column_mask, seed)
+    return fitness_cv, float(independent_scores.mean()), test_metrics[
+        "balanced_accuracy"
+    ]
+
+
+def _sensitivity_record(
+    dataset,
+    noise,
+    seed,
+    parameter,
+    value,
+    alpha,
+    mutation_rate,
+    pop_size,
+    mask,
+    groups,
+    group_names,
+    fitness_cv,
+    independent_cv,
+    test_score,
+    ga_runtime,
+    ga_generations,
+):
+    noise_mask = np.char.startswith(group_names.astype(str), "noise_")
+    noise_kept = int(np.sum(mask & noise_mask)) if noise else 0
+    return {
+        "dataset": dataset,
+        "noise": bool(noise),
+        "seed": seed,
+        "parameter": parameter,
+        "value": float(value),
+        "alpha": float(alpha),
+        "mutation_rate": float(mutation_rate),
+        "pop_size": int(pop_size),
+        "n_groups_selected": int(mask.sum()),
+        "noise_groups_kept": noise_kept,
+        "real_groups_kept": int(mask.sum() - noise_kept),
+        "ga_fitness_cv": float(fitness_cv),
+        "independent_train_cv": float(independent_cv),
+        "test_balanced_accuracy": float(test_score),
+        "ga_runtime": float(ga_runtime),
+        "ga_generations": int(ga_generations),
+        "selected_attributes": json.dumps(group_names[mask].tolist()),
+    }
+
+
+def _reuse_default_sensitivity(dataset, noise, seed, arrays):
+    source = _source_ga_row(dataset, noise, seed)
+    if source is None:
+        return None
+
+    group_names = arrays[5]
+    selected_names = json.loads(source["selected_attributes"])
+    mask = np.isin(group_names, selected_names)
+    if int(mask.sum()) != int(source["n_groups"]):
+        return None
+
+    fitness_cv, independent_cv, _ = _sensitivity_scores(
+        dataset, noise, seed, mask, arrays
+    )
+    return {
+        "mask": mask,
+        "fitness_cv": fitness_cv,
+        "independent_cv": independent_cv,
+        "test_score": float(source["balanced_accuracy"]),
+        "ga_runtime": float(source["ga_runtime"]),
+        "ga_generations": int(source["ga_generations"]),
+    }
+
+
+def _run_sensitivity_setting(
+    dataset,
+    noise,
+    seed,
+    parameter,
+    value,
+    alpha,
+    mutation_rate,
+    pop_size,
+    arrays,
+    cached_result,
+):
+    X_tr, X_te, y_tr, y_te, groups, group_names = arrays[:6]
+    if cached_result is None:
+        start = time.perf_counter()
+        mask, history = run_ga(
+            X_tr,
+            y_tr,
+            groups,
+            seed=seed,
+            pop_size=pop_size,
+            n_gen=40,
+            alpha=alpha,
+            metric="balanced_accuracy",
+            mutation_rate=mutation_rate,
+        )
+        ga_runtime = time.perf_counter() - start
+        fitness_cv, independent_cv, test_score = _sensitivity_scores(
+            dataset, noise, seed, mask, arrays
+        )
+        ga_generations = len(history)
+        cached_result = {
+            "mask": mask,
+            "fitness_cv": fitness_cv,
+            "independent_cv": independent_cv,
+            "test_score": test_score,
+            "ga_runtime": ga_runtime,
+            "ga_generations": ga_generations,
+        }
+
+    row = _sensitivity_record(
+        dataset,
+        noise,
+        seed,
+        parameter,
+        value,
+        alpha,
+        mutation_rate,
+        pop_size,
+        cached_result["mask"],
+        groups,
+        group_names,
+        cached_result["fitness_cv"],
+        cached_result["independent_cv"],
+        cached_result["test_score"],
+        cached_result["ga_runtime"],
+        cached_result["ga_generations"],
+    )
+    return row, cached_result
+
+
+def _write_sensitivity_summary(runs):
+    if runs.empty:
+        return
+    group_cols = ["dataset", "noise", "parameter", "value"]
+    value_cols = [
+        "n_groups_selected",
+        "noise_groups_kept",
+        "real_groups_kept",
+        "ga_fitness_cv",
+        "independent_train_cv",
+        "test_balanced_accuracy",
+        "ga_runtime",
+        "ga_generations",
+    ]
+    summary = runs.groupby(group_cols)[value_cols].agg(["mean", "std"])
+    summary.columns = [
+        f"{column}_{stat}" for column, stat in summary.columns
+    ]
+    _save_csv(
+        summary.reset_index(),
+        os.path.join(RESULT_DIR, "sensitivity_summary.csv"),
+    )
+
+
+def run_sensitivity():
+    os.makedirs(RESULT_DIR, exist_ok=True)
+    if os.path.exists(SENSITIVITY_RUNS_PATH):
+        runs = pd.read_csv(SENSITIVITY_RUNS_PATH)
+    else:
+        runs = pd.DataFrame()
+    existing = set()
+    result_cache = {}
+    if not runs.empty:
+        for _, row in runs.iterrows():
+            identity = (
+                row["dataset"],
+                bool(row["noise"]),
+                int(row["seed"]),
+                row["parameter"],
+                round(float(row["value"]), 12),
+            )
+            existing.add(identity)
+            result_cache[_sensitivity_config_key(row)] = {
+                "fitness_cv": float(row["ga_fitness_cv"]),
+                "independent_cv": float(row["independent_train_cv"]),
+                "test_score": float(row["test_balanced_accuracy"]),
+                "ga_runtime": float(row["ga_runtime"]),
+                "ga_generations": int(row["ga_generations"]),
+                "selected_attributes": json.loads(row["selected_attributes"]),
+            }
+
+    total = sum(
+        len(_sensitivity_specs(dataset, noise, 20 if dataset == "german_credit" else 30))
+        * len(SENSITIVITY_SEEDS)
+        for dataset in DATASETS
+        for noise in (False, True)
+    )
+    completed = 0
+    for noise in (False, True):
+        for dataset in DATASETS:
+            n_groups = (20 if dataset == "german_credit" else 30)
+            if noise:
+                n_groups += NOISE_COUNTS[dataset]
+            specs = _sensitivity_specs(dataset, noise, n_groups)
+            for seed in SENSITIVITY_SEEDS:
+                missing_specs = [
+                    spec
+                    for spec in specs
+                    if (
+                        dataset,
+                        noise,
+                        seed,
+                        spec[0],
+                        round(float(spec[1]), 12),
+                    )
+                    not in existing
+                ]
+                if not missing_specs:
+                    completed += len(specs)
+                    continue
+
+                arrays = _sensitivity_arrays(dataset, noise, seed)
+                default_config = (
+                    dataset,
+                    noise,
+                    seed,
+                    0.01,
+                    round(1.0 / n_groups, 12),
+                    30,
+                )
+                needs_default = any(
+                    alpha == 0.01
+                    and pop_size == 30
+                    and np.isclose(mutation_rate, 1.0 / n_groups)
+                    for _, _, alpha, mutation_rate, pop_size in missing_specs
+                )
+                source_cache = None
+                if needs_default and default_config not in result_cache:
+                    source_cache = _reuse_default_sensitivity(
+                        dataset, noise, seed, arrays
+                    )
+                for parameter, value, alpha, mutation_rate, pop_size in specs:
+                    identity = (
+                        dataset,
+                        noise,
+                        seed,
+                        parameter,
+                        round(float(value), 12),
+                    )
+                    if identity in existing:
+                        completed += 1
+                        continue
+
+                    config = (
+                        dataset,
+                        noise,
+                        seed,
+                        round(float(alpha), 12),
+                        round(float(mutation_rate), 12),
+                        int(pop_size),
+                    )
+                    cached = result_cache.get(config)
+                    if cached is not None:
+                        cached = dict(cached)
+                        cached["mask"] = np.isin(
+                            arrays[5], cached["selected_attributes"]
+                        )
+                    if cached is None and (
+                        alpha == 0.01
+                        and pop_size == 30
+                        and np.isclose(mutation_rate, 1.0 / n_groups)
+                    ):
+                        cached = source_cache
+
+                    row, result = _run_sensitivity_setting(
+                        dataset,
+                        noise,
+                        seed,
+                        parameter,
+                        value,
+                        alpha,
+                        mutation_rate,
+                        pop_size,
+                        arrays,
+                        cached,
+                    )
+                    result_cache[config] = result
+                    if "selected_attributes" not in result_cache[config]:
+                        result_cache[config]["selected_attributes"] = json.loads(
+                            row["selected_attributes"]
+                        )
+                    result_cache[config]["mask"] = np.isin(
+                        arrays[5], result_cache[config]["selected_attributes"]
+                    )
+                    runs = pd.concat(
+                        [runs, pd.DataFrame([row])], ignore_index=True
+                    )
+                    existing.add(identity)
+                    completed += 1
+                    _save_csv(runs, SENSITIVITY_RUNS_PATH)
+                    _write_sensitivity_summary(runs)
+                    print(
+                        f"sensitivity {completed}/{total}: {dataset}, "
+                        f"noise={noise}, seed={seed}, "
+                        f"{parameter}={value}",
+                        flush=True,
+                    )
+
+    _write_sensitivity_summary(runs)
