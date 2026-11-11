@@ -1,4 +1,5 @@
 import numpy as np
+import warnings
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
@@ -7,8 +8,11 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.neural_network import MLPClassifier
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 
 FINAL_ANN_CONFIG = {
@@ -27,22 +31,30 @@ def build_ann(seed, fast=False):
             hidden_layer_sizes=(16,),
             activation="relu",
             solver="adam",
-            early_stopping=True,
-            max_iter=200,
+            early_stopping=False,
+            max_iter=300,
+            alpha=1e-4,
             random_state=seed,
         )
 
     return MLPClassifier(**FINAL_ANN_CONFIG, random_state=seed)
 
 
-def cv_score(X, y, mask, seed, folds=3):
+def cv_score(X, y, mask, seed, folds=3, metric="balanced_accuracy", fast=True):
     mask = np.asarray(mask, dtype=bool)
     if not mask.any():
         return 0.0
 
-    model = build_ann(seed, fast=True)
+    if metric not in ("balanced_accuracy", "accuracy"):
+        raise ValueError(f"unsupported metric: {metric}")
+
+    model = make_pipeline(StandardScaler(), build_ann(seed, fast=fast))
     cv = StratifiedKFold(n_splits=folds, shuffle=True, random_state=seed)
-    scores = cross_val_score(model, X[:, mask], y, cv=cv, scoring="accuracy")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        scores = cross_val_score(
+            model, X[:, mask], y, cv=cv, scoring=metric, n_jobs=1
+        )
     return float(scores.mean())
 
 
