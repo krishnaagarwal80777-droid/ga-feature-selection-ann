@@ -1,0 +1,31 @@
+attribute,selected_count,frequency
+mean radius,5,0.5
+mean texture,3,0.3
+mean perimeter,3,0.3
+mean area,3,0.3
+mean smoothness,3,0.3
+mean compactness,2,0.2
+mean concavity,5,0.5
+mean concave points,5,0.5
+mean symmetry,4,0.4
+mean fractal dimension,3,0.3
+radius error,6,0.6
+texture error,4,0.4
+perimeter error,2,0.2
+area error,6,0.6
+smoothness error,1,0.1
+compactness error,4,0.4
+concavity error,5,0.5
+concave points error,4,0.4
+symmetry error,2,0.2
+fractal dimension error,6,0.6
+worst radius,9,0.9
+worst texture,9,0.9
+worst perimeter,7,0.7
+worst area,8,0.8
+worst smoothness,9,0.9
+worst compactness,2,0.2
+worst concavity,6,0.6
+worst concave points,5,0.5
+worst symmetry,8,0.8
+worst fractal dimension,3,0.3

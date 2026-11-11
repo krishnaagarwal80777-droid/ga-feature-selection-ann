@@ -1,0 +1,61 @@
+attribute,selected_count,frequency
+mean radius,3,0.6
+mean texture,3,0.6
+mean perimeter,3,0.6
+mean area,3,0.6
+mean smoothness,1,0.2
+mean compactness,1,0.2
+mean concavity,5,1.0
+mean concave points,2,0.4
+mean symmetry,3,0.6
+mean fractal dimension,4,0.8
+radius error,3,0.6
+texture error,2,0.4
+perimeter error,3,0.6
+area error,5,1.0
+smoothness error,1,0.2
+compactness error,1,0.2
+concavity error,2,0.4
+concave points error,1,0.2
+symmetry error,1,0.2
+fractal dimension error,3,0.6
+worst radius,4,0.8
+worst texture,5,1.0
+worst perimeter,5,1.0
+worst area,5,1.0
+worst smoothness,5,1.0
+worst compactness,1,0.2
+worst concavity,5,1.0
+worst concave points,4,0.8
+worst symmetry,5,1.0
+worst fractal dimension,1,0.2
+noise_1,2,0.4
+noise_2,2,0.4
+noise_3,0,0.0
+noise_4,2,0.4
+noise_5,1,0.2
+noise_6,0,0.0
+noise_7,1,0.2
+noise_8,3,0.6
+noise_9,3,0.6
+noise_10,3,0.6
+noise_11,0,0.0
+noise_12,4,0.8
+noise_13,2,0.4
+noise_14,1,0.2
+noise_15,2,0.4
+noise_16,0,0.0
+noise_17,1,0.2
+noise_18,2,0.4
+noise_19,1,0.2
+noise_20,2,0.4
+noise_21,2,0.4
+noise_22,0,0.0
+noise_23,2,0.4
+noise_24,1,0.2
+noise_25,1,0.2
+noise_26,0,0.0
+noise_27,1,0.2
+noise_28,2,0.4
+noise_29,0,0.0
+noise_30,0,0.0
