@@ -9,7 +9,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.exceptions import ConvergenceWarning
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.model_selection import RepeatedStratifiedKFold, cross_val_score
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -40,7 +40,7 @@ def build_ann(seed, fast=False):
     return MLPClassifier(**FINAL_ANN_CONFIG, random_state=seed)
 
 
-def cv_score(X, y, mask, seed, folds=3, metric="balanced_accuracy", fast=True):
+def cv_score(X, y, mask, seed, metric="balanced_accuracy", fast=True):
     mask = np.asarray(mask, dtype=bool)
     if not mask.any():
         return 0.0
@@ -49,11 +49,13 @@ def cv_score(X, y, mask, seed, folds=3, metric="balanced_accuracy", fast=True):
         raise ValueError(f"unsupported metric: {metric}")
 
     model = make_pipeline(StandardScaler(), build_ann(seed, fast=fast))
-    cv = StratifiedKFold(n_splits=folds, shuffle=True, random_state=seed)
+    cv = RepeatedStratifiedKFold(
+        n_splits=3, n_repeats=2, random_state=seed
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
         scores = cross_val_score(
-            model, X[:, mask], y, cv=cv, scoring=metric, n_jobs=1
+            model, X[:, mask], y, cv=cv, scoring=metric, n_jobs=-1
         )
     return float(scores.mean())
 
