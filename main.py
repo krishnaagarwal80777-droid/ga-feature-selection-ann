@@ -12,6 +12,7 @@ from ga_fs.experiment import (
     run_noise,
     run_sensitivity,
 )
+from ga_fs.plots import run_plots
 
 
 if __name__ == "__main__":
@@ -20,8 +21,11 @@ if __name__ == "__main__":
     group.add_argument("--noise", action="store_true")
     group.add_argument("--sensitivity", action="store_true")
     group.add_argument("--rerun-baselines", action="store_true")
+    group.add_argument("--plots-only", action="store_true")
     args = parser.parse_args()
-    if args.noise:
+    if args.plots_only:
+        run_plots()
+    elif args.noise:
         run_noise()
     elif args.sensitivity:
         run_sensitivity()
