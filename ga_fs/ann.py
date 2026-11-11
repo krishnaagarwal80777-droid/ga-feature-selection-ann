@@ -4,7 +4,6 @@ from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
     f1_score,
-    precision_score,
     recall_score,
     roc_auc_score,
 )
@@ -75,7 +74,6 @@ def evaluate(X_tr, y_tr, X_te, y_te, mask, seed, return_diagnostics=False):
 
     metrics = {
         "accuracy": accuracy_score(y_te, y_pred),
-        "precision": precision_score(y_te, y_pred, zero_division=0),
         "macro_f1": f1_score(y_te, y_pred, average="macro", zero_division=0),
         "minority_recall": recall_score(
             y_te, y_pred, labels=[minority_class], average="macro", zero_division=0

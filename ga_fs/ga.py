@@ -108,9 +108,6 @@ def run_ga(
         else:
             no_improve += 1
 
-        if n_new_evals + n_cache_hits != pop_size:
-            raise RuntimeError("generation evaluation counts do not match population")
-
         stop = no_improve >= 10 or len(history) + 1 == n_gen
         if not stop:
             new_pop = [pop[i].copy() for i in order[:2]]

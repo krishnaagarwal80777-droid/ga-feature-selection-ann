@@ -58,17 +58,6 @@ def expand_group_mask(group_mask, groups):
     return group_mask[np.searchsorted(group_ids, groups)]
 
 
-def get_group_names(feature_names, groups):
-    group_ids = np.unique(groups)
-    names = []
-    for group in group_ids:
-        group_names = np.unique(np.asarray(feature_names)[groups == group])
-        if len(group_names) != 1:
-            raise ValueError("each group must map to exactly one attribute name")
-        names.append(group_names[0])
-    return np.asarray(names)
-
-
 def get_splits(X, y, seed):
     X_train, X_test, y_train, y_test = train_test_split(
         X,
